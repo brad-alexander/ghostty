@@ -36,10 +36,19 @@ pub const Mouse = struct {
     /// the renderer state.
     point: ?terminalpkg.point.Coordinate = null,
 
+    /// Raw mouse position in surface pixels (top-left origin).
+    surface: ?renderer.Coordinate.Surface = null,
+
     /// The mods that are currently active for the last mouse event.
     /// This could really just be mods in general and we probably will
     /// move it out of mouse state at some point.
     mods: inputpkg.Mods = .{},
+
+    /// Reset all tracked mouse coordinates.
+    pub inline fn clear(self: *Mouse) void {
+        self.point = null;
+        self.surface = null;
+    }
 };
 
 /// The pre-edit state. See Surface.preeditCallback for more information.

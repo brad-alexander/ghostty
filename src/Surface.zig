@@ -1352,6 +1352,12 @@ fn mouseRefreshLinks(
     // recheck if the mouse moves some pixels to the same point.
     self.mouse.link_point = pos_vp;
 
+    const surface_coord: rendererpkg.Coordinate.Surface = .{
+        .x = pos.x,
+        .y = pos.y,
+    };
+    self.renderer_state.mouse.surface = surface_coord;
+
     // We use an arena for everything below to make things easy to clean up.
     // In the case we don't do any allocs this is very cheap to setup
     // (effectively just struct init).
@@ -1413,6 +1419,7 @@ fn mouseRefreshLinks(
     // apprt so it can highlight it.
     if (link_) |link| {
         self.renderer_state.mouse.point = pos_vp;
+        self.renderer_state.mouse.surface = surface_coord;
         self.mouse.over_link = true;
         self.renderer_state.terminal.screen.dirty.hyperlink_hover = true;
         _ = try self.rt_app.performAction(
@@ -4056,9 +4063,11 @@ pub fn cursorPosCallback(
 
     // log.debug("cursor pos x={} y={} mods={?}", .{ pos.x, pos.y, mods });
 
+    const outside_viewport = pos.x < 0 or pos.y < 0;
+
     // If the position is negative, it is outside our viewport and
     // we need to clear any hover states.
-    if (pos.x < 0 or pos.y < 0) {
+    if (outside_viewport) {
         // Reset our hyperlink state
         self.mouse.link_point = null;
         if (self.mouse.over_link) {
@@ -4080,7 +4089,7 @@ pub fn cursorPosCallback(
         defer self.renderer_state.mutex.unlock();
 
         // No mouse point so we don't highlight links
-        self.renderer_state.mouse.point = null;
+        self.renderer_state.mouse.clear();
 
         // Mark the link's row as dirty, but continue with updating the
         // mouse state below so we can scroll when our position is negative.
@@ -4095,6 +4104,10 @@ pub fn cursorPosCallback(
 
     // The mouse position in the viewport
     const pos_vp = self.posToViewport(pos.x, pos.y);
+    const surface_coord: rendererpkg.Coordinate.Surface = .{
+        .x = pos.x,
+        .y = pos.y,
+    };
 
     // We always reset the over link status because it will be reprocessed
     // below. But we need the old value to know if we need to undo mouse
@@ -4119,6 +4132,11 @@ pub fn cursorPosCallback(
     // want to set it when we're not selecting or doing any other mouse
     // event.
     self.renderer_state.mouse.point = null;
+    if (outside_viewport) {
+        self.renderer_state.mouse.surface = null;
+    } else {
+        self.renderer_state.mouse.surface = surface_coord;
+    }
 
     // If we have an inspector, we need to always record position information
     if (self.inspector) |insp| {
@@ -4173,6 +4191,10 @@ pub fn cursorPosCallback(
         } else null;
 
         try self.mouseReport(button, .motion, self.mouse.mods, pos);
+
+        if (self.renderer.hasAnimations()) {
+            try self.queueRender();
+        }
 
         // If we're doing mouse motion tracking, we do not support text
         // selection.
@@ -4237,6 +4259,10 @@ pub fn cursorPosCallback(
         }
 
         return;
+    }
+
+    if (self.renderer.hasAnimations()) {
+        try self.queueRender();
     }
 }
 

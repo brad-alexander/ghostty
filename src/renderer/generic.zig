@@ -166,6 +166,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// Custom shader uniform values.
         custom_shader_uniforms: shadertoy.Uniforms,
 
+        /// Most recent surface-space mouse position for custom shader uniforms.
+        custom_shader_mouse_surface: ?renderer.Coordinate.Surface,
+
         /// Timestamp we rendered out first frame.
         ///
         /// This is used when updating custom shader uniforms.
@@ -740,6 +743,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     .previous_cursor_color = @splat(0),
                     .cursor_change_time = 0,
                 },
+                .custom_shader_mouse_surface = null,
                 .bg_image_buffer = undefined,
 
                 // Fonts
@@ -1269,6 +1273,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             }
 
             // Build our GPU cells
+            self.custom_shader_mouse_surface = critical.mouse.surface;
+
             try self.rebuildCells(
                 critical.full_rebuild,
                 &critical.screen,
@@ -2355,6 +2361,24 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     uniforms.current_cursor_color = cursor_color;
                     uniforms.cursor_change_time = uniforms.time;
                 }
+            }
+
+            const screen_width_f32: f32 = @floatFromInt(screen.width);
+            const screen_height_f32: f32 = @floatFromInt(screen.height);
+            if (self.custom_shader_mouse_surface) |surface_pos| {
+                var mouse_x: f32 = @floatCast(surface_pos.x);
+                var mouse_y: f32 = @floatCast(surface_pos.y);
+
+                mouse_x = std.math.clamp(mouse_x, 0.0, screen_width_f32);
+                mouse_y = std.math.clamp(mouse_y, 0.0, screen_height_f32);
+
+                if (!GraphicsAPI.custom_shader_y_is_down) {
+                    mouse_y = screen_height_f32 - mouse_y;
+                }
+
+                self.custom_shader_uniforms.mouse = .{ mouse_x, mouse_y, 0, 0 };
+            } else {
+                self.custom_shader_uniforms.mouse = .{ 0, 0, 0, 0 };
             }
         }
 

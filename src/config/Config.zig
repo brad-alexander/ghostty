@@ -2578,7 +2578,7 @@ keybind: Keybinds = .{},
 ///    Currently only `iChannel0` exists, and `iChannelResolution[0]` is
 ///    identical to `iResolution`.
 ///
-///  * `vec4 iMouse` - Mouse input info. (NOT CURRENTLY SUPPORTED)
+///  * `vec4 iMouse` - Mouse input in surface pixels (`x`, `y`, `0`, `0`).
 ///
 ///  * `vec4 iDate` - Date/time info. (NOT CURRENTLY SUPPORTED)
 ///
