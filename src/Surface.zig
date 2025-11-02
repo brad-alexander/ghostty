@@ -1952,7 +1952,10 @@ fn clipboardWrite(self: *const Surface, data: []const u8, loc: apprt.Clipboard) 
     // them to confirm the clipboard access. Each app runtime handles this
     // differently.
     const confirm = self.config.clipboard_write == .ask;
-    self.rt_surface.setClipboardString(buf, loc, confirm) catch |err| {
+    self.rt_surface.setClipboard(loc, &.{.{
+        .mime = "text/plain",
+        .data = buf,
+    }}, confirm) catch |err| {
         log.err("error setting clipboard string err={}", .{err});
         return;
     };
@@ -1962,19 +1965,101 @@ fn copySelectionToClipboards(
     self: *Surface,
     sel: terminal.Selection,
     clipboards: []const apprt.Clipboard,
-) void {
-    const buf = self.io.terminal.screen.selectionString(self.alloc, .{
-        .sel = sel,
-        .trim = self.config.clipboard_trim_trailing_spaces,
-    }) catch |err| {
-        log.err("error reading selection string err={}", .{err});
-        return;
-    };
-    defer self.alloc.free(buf);
+    format: input.Binding.Action.CopyToClipboard,
+) !void {
+    // Create an arena to simplify memory management here.
+    var arena = ArenaAllocator.init(self.alloc);
+    defer arena.deinit();
+    const alloc = arena.allocator();
 
-    for (clipboards) |clipboard| self.rt_surface.setClipboardString(
-        buf,
+    // The options we'll use for all formatting. We'll just override the
+    // emit format.
+    const opts: terminal.formatter.Options = .{
+        .emit = .plain, // We'll override this below
+        .unwrap = true,
+        .trim = self.config.clipboard_trim_trailing_spaces,
+        .background = self.io.terminal.colors.background.get(),
+        .foreground = self.io.terminal.colors.foreground.get(),
+        .palette = &self.io.terminal.colors.palette.current,
+    };
+
+    const ScreenFormatter = terminal.formatter.ScreenFormatter;
+    var aw: std.Io.Writer.Allocating = .init(alloc);
+    var contents: std.ArrayList(apprt.ClipboardContent) = .empty;
+    switch (format) {
+        .plain => {
+            var formatter: ScreenFormatter = .init(&self.io.terminal.screen, opts);
+            formatter.content = .{ .selection = sel };
+            try formatter.format(&aw.writer);
+            try contents.append(alloc, .{
+                .mime = "text/plain",
+                .data = try aw.toOwnedSliceSentinel(0),
+            });
+        },
+
+        .vt => {
+            var formatter: ScreenFormatter = .init(&self.io.terminal.screen, opts: {
+                var copy = opts;
+                copy.emit = .vt;
+                break :opts copy;
+            });
+            formatter.content = .{ .selection = sel };
+            try formatter.format(&aw.writer);
+            try contents.append(alloc, .{
+                .mime = "text/plain",
+                .data = try aw.toOwnedSliceSentinel(0),
+            });
+        },
+
+        .html => {
+            var formatter: ScreenFormatter = .init(&self.io.terminal.screen, opts: {
+                var copy = opts;
+                copy.emit = .html;
+                break :opts copy;
+            });
+            formatter.content = .{ .selection = sel };
+            try formatter.format(&aw.writer);
+            try contents.append(alloc, .{
+                .mime = "text/html",
+                .data = try aw.toOwnedSliceSentinel(0),
+            });
+        },
+
+        .mixed => {
+            var formatter: ScreenFormatter = .init(&self.io.terminal.screen, opts);
+            formatter.content = .{ .selection = sel };
+            try formatter.format(&aw.writer);
+            try contents.append(alloc, .{
+                .mime = "text/plain",
+                .data = try aw.toOwnedSliceSentinel(0),
+            });
+
+            assert(aw.written().len == 0);
+            formatter = .init(&self.io.terminal.screen, opts: {
+                var copy = opts;
+                copy.emit = .html;
+
+                // We purposely don't emit background/foreground for mixed
+                // mode because the HTML contents is often used for rich text
+                // input and with trimmed spaces it looks pretty bad.
+                copy.background = null;
+                copy.foreground = null;
+
+                break :opts copy;
+            });
+            formatter.content = .{ .selection = sel };
+            try formatter.format(&aw.writer);
+            try contents.append(alloc, .{
+                .mime = "text/html",
+                .data = try aw.toOwnedSliceSentinel(0),
+            });
+        },
+    }
+
+    assert(contents.items.len > 0);
+    for (clipboards) |clipboard| self.rt_surface.setClipboard(
         clipboard,
+        contents.items,
         false,
     ) catch |err| {
         log.err(
@@ -2005,9 +2090,11 @@ fn setSelection(self: *Surface, sel_: ?terminal.Selection) !void {
         .false => unreachable, // handled above with an early exit
 
         // Both standard and selection clipboards are set.
-        .clipboard => {
-            self.copySelectionToClipboards(sel, &.{ .standard, .selection });
-        },
+        .clipboard => try self.copySelectionToClipboards(
+            sel,
+            &.{ .standard, .selection },
+            .mixed,
+        ),
 
         // The selection clipboard is set if supported, otherwise the standard.
         .true => {
@@ -2015,7 +2102,11 @@ fn setSelection(self: *Surface, sel_: ?terminal.Selection) !void {
                 .selection
             else
                 .standard;
-            self.copySelectionToClipboards(sel, &.{clipboard});
+            try self.copySelectionToClipboards(
+                sel,
+                &.{clipboard},
+                .mixed,
+            );
         },
     }
 }
@@ -3753,14 +3844,22 @@ pub fn mouseButtonCallback(
             },
             .copy => {
                 if (self.io.terminal.screen.selection) |sel| {
-                    self.copySelectionToClipboards(sel, &.{.standard});
+                    try self.copySelectionToClipboards(
+                        sel,
+                        &.{.standard},
+                        .mixed,
+                    );
                 }
 
                 try self.setSelection(null);
                 try self.queueRender();
             },
             .@"copy-or-paste" => if (self.io.terminal.screen.selection) |sel| {
-                self.copySelectionToClipboards(sel, &.{.standard});
+                try self.copySelectionToClipboards(
+                    sel,
+                    &.{.standard},
+                    .mixed,
+                );
                 try self.setSelection(null);
                 try self.queueRender();
             } else {
@@ -4683,23 +4782,15 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             self.renderer_state.terminal.fullReset();
         },
 
-        .copy_to_clipboard => {
+        .copy_to_clipboard => |format| {
             // We can read from the renderer state without holding
             // the lock because only we will write to this field.
             if (self.io.terminal.screen.selection) |sel| {
-                const buf = self.io.terminal.screen.selectionString(self.alloc, .{
-                    .sel = sel,
-                    .trim = self.config.clipboard_trim_trailing_spaces,
-                }) catch |err| {
-                    log.err("error reading selection string err={}", .{err});
-                    return true;
-                };
-                defer self.alloc.free(buf);
-
-                self.rt_surface.setClipboardString(buf, .standard, false) catch |err| {
-                    log.err("error setting clipboard string err={}", .{err});
-                    return true;
-                };
+                try self.copySelectionToClipboards(
+                    sel,
+                    &.{.standard},
+                    format,
+                );
 
                 // Clear the selection if configured to do so.
                 if (self.config.selection_clear_on_copy) {
@@ -4747,7 +4838,10 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
                 };
                 defer self.alloc.free(url_text);
 
-                self.rt_surface.setClipboardString(url_text, .standard, false) catch |err| {
+                self.rt_surface.setClipboard(.standard, &.{.{
+                    .mime = "text/plain",
+                    .data = url_text,
+                }}, false) catch |err| {
                     log.err("error copying url to clipboard err={}", .{err});
                     return false;
                 };
@@ -4762,7 +4856,10 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             const title = self.rt_surface.getTitle() orelse return false;
             if (title.len == 0) return false;
 
-            self.rt_surface.setClipboardString(title, .standard, false) catch |err| {
+            self.rt_surface.setClipboard(.standard, &.{.{
+                .mime = "text/plain",
+                .data = title,
+            }}, false) catch |err| {
                 log.err("error copying title to clipboard err={}", .{err});
                 return true;
             };
@@ -5209,14 +5306,24 @@ const WriteScreenLoc = enum {
 fn writeScreenFile(
     self: *Surface,
     loc: WriteScreenLoc,
-    write_action: input.Binding.Action.WriteScreenAction,
+    write_screen: input.Binding.Action.WriteScreen,
 ) !void {
     // Create a temporary directory to store our scrollback.
     var tmp_dir = try internal_os.TempDir.init();
     errdefer tmp_dir.deinit();
 
     var filename_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const filename = try std.fmt.bufPrint(&filename_buf, "{s}.txt", .{@tagName(loc)});
+    const filename = try std.fmt.bufPrint(
+        &filename_buf,
+        "{s}.{s}",
+        .{
+            @tagName(loc),
+            switch (write_screen.emit) {
+                .plain, .vt => "txt",
+                .html => "html",
+            },
+        },
+    );
 
     // Open our scrollback file
     var file = try tmp_dir.dir.createFile(
@@ -5276,18 +5383,24 @@ fn writeScreenFile(
             return;
         };
 
-        // Use topLeft and bottomRight to ensure correct coordinate ordering
-        const tl = sel.topLeft(&self.io.terminal.screen);
-        const br = sel.bottomRight(&self.io.terminal.screen);
-
-        try self.io.terminal.screen.dumpString(
-            buf_writer,
-            .{
-                .tl = tl,
-                .br = br,
-                .unwrap = true,
+        const ScreenFormatter = terminal.formatter.ScreenFormatter;
+        var formatter: ScreenFormatter = .init(&self.io.terminal.screen, .{
+            .emit = switch (write_screen.emit) {
+                .plain => .plain,
+                .vt => .vt,
+                .html => .html,
             },
-        );
+            .unwrap = true,
+            .trim = false,
+            .background = self.io.terminal.colors.background.get(),
+            .foreground = self.io.terminal.colors.foreground.get(),
+            .palette = &self.io.terminal.colors.palette.current,
+        });
+        formatter.content = .{ .selection = sel.ordered(
+            &self.io.terminal.screen,
+            .forward,
+        ) };
+        try formatter.format(buf_writer);
     }
     try buf_writer.flush();
 
@@ -5295,13 +5408,22 @@ fn writeScreenFile(
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const path = try tmp_dir.dir.realpath(filename, &path_buf);
 
-    switch (write_action) {
+    switch (write_screen.action) {
         .copy => {
             const pathZ = try self.alloc.dupeZ(u8, path);
             defer self.alloc.free(pathZ);
-            try self.rt_surface.setClipboardString(pathZ, .standard, false);
+            try self.rt_surface.setClipboard(.standard, &.{.{
+                .mime = "text/plain",
+                .data = pathZ,
+            }}, false);
         },
-        .open => try self.openUrl(.{ .kind = .text, .url = path }),
+        .open => try self.openUrl(.{
+            .kind = switch (write_screen.emit) {
+                .plain, .vt => .text,
+                .html => .html,
+            },
+            .url = path,
+        }),
         .paste => self.io.queueMessage(try termio.Message.writeReq(
             self.alloc,
             path,
@@ -5339,11 +5461,10 @@ pub fn completeClipboardRequest(
             confirmed,
         ),
 
-        .osc_52_write => |clipboard| try self.rt_surface.setClipboardString(
-            data,
-            clipboard,
-            !confirmed,
-        ),
+        .osc_52_write => |clipboard| try self.rt_surface.setClipboard(clipboard, &.{.{
+            .mime = "text/plain",
+            .data = data,
+        }}, !confirmed),
     }
 }
 

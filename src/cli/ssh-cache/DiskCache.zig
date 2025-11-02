@@ -70,7 +70,7 @@ pub fn add(
 
     // Create cache directory if needed
     if (std.fs.path.dirname(self.path)) |dir| {
-        std.fs.makeDirAbsolute(dir) catch |err| switch (err) {
+        std.fs.cwd().makePath(dir) catch |err| switch (err) {
             error.PathAlreadyExists => {},
             else => return err,
         };
@@ -181,13 +181,12 @@ pub fn contains(
     // Open our file
     const file = std.fs.openFileAbsolute(
         self.path,
-        .{ .mode = .read_write },
+        .{},
     ) catch |err| switch (err) {
         error.FileNotFound => return false,
         else => return err,
     };
     defer file.close();
-    try fixupPermissions(file);
 
     // Read existing entries
     var entries = try readEntries(alloc, file);

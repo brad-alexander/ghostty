@@ -1553,16 +1553,16 @@ pub const Surface = extern struct {
         );
     }
 
-    pub fn setClipboardString(
+    pub fn setClipboard(
         self: *Self,
-        val: [:0]const u8,
         clipboard_type: apprt.Clipboard,
+        contents: []const apprt.ClipboardContent,
         confirm: bool,
     ) void {
         Clipboard.set(
             self,
-            val,
             clipboard_type,
+            contents,
             confirm,
         );
     }
@@ -3334,11 +3334,19 @@ const Clipboard = struct {
     /// Set the clipboard contents.
     pub fn set(
         self: *Surface,
-        val: [:0]const u8,
         clipboard_type: apprt.Clipboard,
+        contents: []const apprt.ClipboardContent,
         confirm: bool,
     ) void {
         const priv = self.private();
+
+        // Grab our plaintext content for use in confirmation dialogs
+        // and signals. We always expect one to exist.
+        const text: [:0]const u8 = for (contents) |content| {
+            if (std.mem.eql(u8, content.mime, "text/plain")) {
+                break content.data;
+            }
+        } else return;
 
         // If no confirmation is necessary, set the clipboard.
         if (!confirm) {
@@ -3346,12 +3354,32 @@ const Clipboard = struct {
                 priv.gl_area.as(gtk.Widget),
                 clipboard_type,
             ) orelse return;
-            clipboard.setText(val);
+
+            const alloc = Application.default().allocator();
+            if (alloc.alloc(*gdk.ContentProvider, contents.len)) |providers| {
+                // Note: we don't need to unref the individual providers
+                // because new_union takes ownership of them.
+                defer alloc.free(providers);
+
+                for (contents, 0..) |content, i| {
+                    const bytes = glib.Bytes.new(content.data.ptr, content.data.len);
+                    defer bytes.unref();
+                    const provider = gdk.ContentProvider.newForBytes(content.mime, bytes);
+                    providers[i] = provider;
+                }
+
+                const all = gdk.ContentProvider.newUnion(providers.ptr, providers.len);
+                defer all.unref();
+                _ = clipboard.setContent(all);
+            } else |_| {
+                // If we fail to alloc, we can at least set the text content.
+                clipboard.setText(text);
+            }
 
             Surface.signals.@"clipboard-write".impl.emit(
                 self,
                 null,
-                .{ clipboard_type, val.ptr },
+                .{ clipboard_type, text.ptr },
                 null,
             );
 
@@ -3361,7 +3389,7 @@ const Clipboard = struct {
         showClipboardConfirmation(
             self,
             .{ .osc_52_write = clipboard_type },
-            val,
+            text,
         );
     }
 

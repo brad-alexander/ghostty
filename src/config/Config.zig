@@ -1765,7 +1765,7 @@ keybind: Keybinds = .{},
 ///   * `ghostty` - Use the background and foreground colors specified in the
 ///     Ghostty configuration. This is only supported on Linux builds.
 ///
-/// On macOS, if `macos-titlebar-style` is "tabs", the window theme will be
+/// On macOS, if `macos-titlebar-style` is `tabs` or `transparent`, the window theme will be
 /// automatically set based on the luminosity of the terminal background color.
 /// This only applies to terminal windows. This setting will still apply to
 /// non-terminal windows within Ghostty.
@@ -2006,7 +2006,9 @@ keybind: Keybinds = .{},
 @"clipboard-write": ClipboardAccess = .allow,
 
 /// Trims trailing whitespace on data that is copied to the clipboard. This does
-/// not affect data sent to the clipboard via `clipboard-write`.
+/// not affect data sent to the clipboard via `clipboard-write`. This only
+/// applies to trailing whitespace on lines that have other characters.
+/// Completely blank lines always have their whitespace trimmed.
 @"clipboard-trim-trailing-spaces": bool = true,
 
 /// Require confirmation before pasting text that appears unsafe. This helps
@@ -2646,7 +2648,9 @@ keybind: Keybinds = .{},
 ///    This could result in an audiovisual effect, a notification, or something
 ///    else entirely. Changing these effects require altering system settings:
 ///    for instance under the "Sound > Alert Sound" setting in GNOME,
-///    or the "Accessibility > System Bell" settings in KDE Plasma. (GTK only)
+///    or the "Accessibility > System Bell" settings in KDE Plasma.
+///
+///    On macOS, this plays the system alert sound.
 ///
 ///  * `audio`
 ///
@@ -4956,6 +4960,13 @@ pub const TerminalColor = union(enum) {
         return .{ .color = try Color.parseCLI(input) };
     }
 
+    pub fn toTerminalRGB(self: TerminalColor) ?terminal.color.RGB {
+        return switch (self) {
+            .color => |v| v.toTerminalRGB(),
+            .@"cell-foreground", .@"cell-background" => null,
+        };
+    }
+
     /// Used by Formatter
     pub fn formatEntry(self: TerminalColor, formatter: formatterpkg.EntryFormatter) !void {
         switch (self) {
@@ -5640,12 +5651,12 @@ pub const Keybinds = struct {
             try self.set.put(
                 alloc,
                 .{ .key = .{ .physical = .copy } },
-                .{ .copy_to_clipboard = {} },
+                .{ .copy_to_clipboard = .mixed },
             );
             try self.set.put(
                 alloc,
                 .{ .key = .{ .physical = .paste } },
-                .{ .paste_from_clipboard = {} },
+                .paste_from_clipboard,
             );
 
             // On non-MacOS desktop envs (Windows, KDE, Gnome, Xfce), ctrl+insert is an
@@ -5658,7 +5669,7 @@ pub const Keybinds = struct {
                 try self.set.put(
                     alloc,
                     .{ .key = .{ .physical = .insert }, .mods = .{ .ctrl = true } },
-                    .{ .copy_to_clipboard = {} },
+                    .{ .copy_to_clipboard = .mixed },
                 );
                 try self.set.put(
                     alloc,
@@ -5677,7 +5688,7 @@ pub const Keybinds = struct {
             try self.set.putFlags(
                 alloc,
                 .{ .key = .{ .unicode = 'c' }, .mods = mods },
-                .{ .copy_to_clipboard = {} },
+                .{ .copy_to_clipboard = .mixed },
                 .{ .performable = true },
             );
             try self.set.put(

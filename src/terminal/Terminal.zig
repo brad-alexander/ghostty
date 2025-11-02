@@ -22,6 +22,8 @@ const sgr = @import("sgr.zig");
 const Tabstops = @import("Tabstops.zig");
 const color = @import("color.zig");
 const mouse_shape_pkg = @import("mouse_shape.zig");
+const ReadonlyHandler = @import("stream_readonly.zig").Handler;
+const ReadonlyStream = @import("stream_readonly.zig").Stream;
 
 const size = @import("size.zig");
 const pagepkg = @import("page.zig");
@@ -71,17 +73,8 @@ scrolling_region: ScrollingRegion,
 /// The last reported pwd, if any.
 pwd: std.ArrayList(u8),
 
-/// The default color palette. This is only modified by changing the config file
-/// and is used to reset the palette when receiving an OSC 104 command.
-default_palette: color.Palette = color.default,
-
-/// The color palette to use. The mask indicates which palette indices have been
-/// modified with OSC 4
-color_palette: struct {
-    const Mask = std.StaticBitSet(@typeInfo(color.Palette).array.len);
-    colors: color.Palette = color.default,
-    mask: Mask = .initEmpty(),
-} = .{},
+/// The color state for this terminal.
+colors: Colors,
 
 /// The previous printed character. This is used for the repeat previous
 /// char CSI (ESC [ <n> b).
@@ -131,6 +124,23 @@ flags: packed struct {
     /// Dirty flags for the renderer.
     dirty: Dirty = .{},
 } = .{},
+
+/// The various color configurations a terminal maintains and that can
+/// be set dynamically via OSC, with defaults usually coming from a
+/// configuration.
+pub const Colors = struct {
+    background: color.DynamicRGB,
+    foreground: color.DynamicRGB,
+    cursor: color.DynamicRGB,
+    palette: color.DynamicPalette,
+
+    pub const default: Colors = .{
+        .background = .unset,
+        .foreground = .unset,
+        .cursor = .unset,
+        .palette = .default,
+    };
+};
 
 /// This is a set of dirty flags the renderer can use to determine
 /// what parts of the screen need to be redrawn. It is up to the renderer
@@ -197,6 +207,7 @@ pub const Options = struct {
     cols: size.CellCountInt,
     rows: size.CellCountInt,
     max_scrollback: usize = 10_000,
+    colors: Colors = .default,
 
     /// The default mode state. When the terminal gets a reset, it
     /// will revert back to this state.
@@ -210,7 +221,7 @@ pub fn init(
 ) !Terminal {
     const cols = opts.cols;
     const rows = opts.rows;
-    return Terminal{
+    return .{
         .cols = cols,
         .rows = rows,
         .active_screen = .primary,
@@ -224,6 +235,7 @@ pub fn init(
             .right = cols - 1,
         },
         .pwd = .empty,
+        .colors = opts.colors,
         .modes = .{
             .values = opts.default_modes,
             .default = opts.default_modes,
@@ -237,6 +249,19 @@ pub fn deinit(self: *Terminal, alloc: Allocator) void {
     self.secondary_screen.deinit();
     self.pwd.deinit(alloc);
     self.* = undefined;
+}
+
+/// Return a terminal.Stream that can process VT streams and update this
+/// terminal state. The streams will only process read-only data that
+/// modifies terminal state. Sequences that query or otherwise require
+/// output will be ignored.
+pub fn vtStream(self: *Terminal) ReadonlyStream {
+    return .initAlloc(self.gpa(), self.vtHandler());
+}
+
+/// This is the handler-side only for vtStream.
+pub fn vtHandler(self: *Terminal) ReadonlyHandler {
+    return .init(self);
 }
 
 /// The general allocator we should use for this terminal.
@@ -581,7 +606,7 @@ fn printCell(
         if (unmapped_c > std.math.maxInt(u8)) break :c ' ';
 
         // Get our lookup table and map it
-        const table = set.table();
+        const table = charsets.table(set);
         break :c @intCast(table[@intCast(unmapped_c)]);
     };
 
