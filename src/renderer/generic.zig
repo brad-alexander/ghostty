@@ -2332,6 +2332,17 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             } else {
                 self.custom_shader_uniforms.mouse = .{ 0, 0, 0, 0 };
             }
+
+            // Update scrollbar uniform
+            self.custom_shader_uniforms.scrollbar = .{
+                @floatFromInt(self.scrollbar.offset),
+                @floatFromInt(self.scrollbar.len),
+                @floatFromInt(self.scrollbar.total),
+                0,
+            };
+
+            // Update line count uniform (monotonically increasing total rows)
+            self.custom_shader_uniforms.line_count = @intCast(self.scrollbar.total);
         }
 
         /// Convert the terminal state to GPU cells stored in CPU memory. These

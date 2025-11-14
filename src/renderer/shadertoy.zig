@@ -26,6 +26,8 @@ pub const Uniforms = extern struct {
     current_cursor_color: [4]f32 align(16),
     previous_cursor_color: [4]f32 align(16),
     cursor_change_time: f32 align(4),
+    scrollbar: [4]f32 align(16), // x: offset, y: length, z: total, w: unused
+    line_count: u32 align(4), // monotonically increasing line counter
 };
 
 /// The target to load shaders for.
